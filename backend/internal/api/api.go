@@ -34,15 +34,11 @@ func NewRouter(database *db.Database) *chi.Mux {
 		w.Write([]byte("OK"))
 	})
 
+	fundHandler := &FundHandler{DB: database}
+
 	r.Route("/v1", func(r chi.Router) {
 		r.Use(AuthMiddleware)
 		r.Use(RateLimitMiddleware)
-
-		// Stripe endpoints
-		r.Post("/fund/stripe", HandleStripeWebhook)
-
-		// Solana endpoints
-		r.Post("/fund/solana", HandleSolanaWebhook)
 
 		// Auth
 		authHandler := &AuthHandler{DB: database}
@@ -55,7 +51,13 @@ func NewRouter(database *db.Database) *chi.Mux {
 		// Leaderboard
 		leaderboardHandler := &LeaderboardHandler{DB: database}
 		leaderboardHandler.RegisterRoutes(r)
+
+		// Fund / Purchase (auth-protected endpoints)
+		fundHandler.RegisterRoutes(r)
 	})
+
+	// Stripe webhook — outside auth middleware (Stripe sends its own signature)
+	r.Post("/v1/fund/stripe/webhook", fundHandler.StripeWebhook)
 
 	// WebSocket endpoint for real-time updates
 	r.Get("/ws", HandleWebSocket)
@@ -69,12 +71,4 @@ func NewRouter(database *db.Database) *chi.Mux {
 	r.Handle("/objects/*", http.StripPrefix("/objects/", fileServer))
 
 	return r
-}
-
-func HandleStripeWebhook(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte(`{"status": "stripe endpoint ready"}`))
-}
-
-func HandleSolanaWebhook(w http.ResponseWriter, r *http.Request) {
-	w.Write([]byte(`{"status": "solana endpoint ready"}`))
 }

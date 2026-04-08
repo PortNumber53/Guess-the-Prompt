@@ -588,13 +588,118 @@ const HowItWorksPage = () => (
   </div>
 );
 
-const BuyCoinsPage = () => {
+type CoinBundle = { id: number, coins: number, bonusPct: number, totalCoins: number, priceCents: number, label: string };
+
+const BuyCoinsPage = ({ user, onLoginClick }: { user: AuthUser, onLoginClick: () => void }) => {
   const [selectedBundle, setSelectedBundle] = useState<number | null>(null);
-  
-  const handlePayment = (method: string) => {
+  const [bundles, setBundles] = useState<CoinBundle[]>([]);
+  const [processing, setProcessing] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch('/v1/fund/bundles')
+      .then(res => res.json())
+      .then(data => setBundles(data || []))
+      .catch(() => {});
+  }, []);
+
+  // Check for Stripe redirect status
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get('status');
+    if (status === 'success') {
+      setStatusMsg('Payment successful! Your coins have been added to your wallet.');
+      window.history.replaceState({}, '', '/buy-coins');
+    } else if (status === 'cancelled') {
+      setStatusMsg('Payment was cancelled.');
+      window.history.replaceState({}, '', '/buy-coins');
+    }
+  }, []);
+
+  const handleStripe = async () => {
     if (!selectedBundle) return;
-    alert(`Mock Payment Triggered via ${method} for bundle #${selectedBundle}`);
+    if (!user) { onLoginClick(); return; }
+    setProcessing(true);
+    setStatusMsg(null);
+    try {
+      const res = await fetch('/v1/fund/stripe/create-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` },
+        body: JSON.stringify({ bundleId: selectedBundle }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        setStatusMsg(`Error: ${text}`);
+        setProcessing(false);
+        return;
+      }
+      const data = await res.json();
+      if (data.sessionUrl) {
+        window.location.href = data.sessionUrl;
+      } else {
+        setStatusMsg('Failed to create checkout session');
+        setProcessing(false);
+      }
+    } catch (e) {
+      setStatusMsg('Network error. Please try again.');
+      setProcessing(false);
+    }
   };
+
+  const handleSolana = async () => {
+    if (!selectedBundle) return;
+    if (!user) { onLoginClick(); return; }
+    setProcessing(true);
+    setStatusMsg(null);
+
+    const bundle = bundles.find(b => b.id === selectedBundle);
+    if (!bundle) { setProcessing(false); return; }
+
+    // Check if Phantom wallet is available
+    const solana = (window as any).solana;
+    if (!solana?.isPhantom) {
+      setStatusMsg('Phantom wallet not found. Please install the Phantom browser extension.');
+      setProcessing(false);
+      return;
+    }
+
+    try {
+      // Connect wallet
+      await solana.connect();
+
+      // TODO: In production, use @solana/web3.js to build and send the transaction programmatically
+      // For now, prompt user to send manually and enter the tx signature
+      const txSig = prompt(`Send $${(bundle.priceCents / 100).toFixed(2)} worth of SOL to the game wallet.\n\nAfter sending, paste your transaction signature here:`);
+      
+      if (!txSig) {
+        setStatusMsg('Transaction cancelled.');
+        setProcessing(false);
+        return;
+      }
+
+      const res = await fetch('/v1/fund/solana/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${user.token}` },
+        body: JSON.stringify({ bundleId: selectedBundle, txSignature: txSig }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        setStatusMsg(`Verification failed: ${text}`);
+        setProcessing(false);
+        return;
+      }
+
+      const data = await res.json();
+      setStatusMsg(`Success! ${data.coinsAdded} coins added to your wallet.`);
+    } catch (e: any) {
+      setStatusMsg(e.message || 'Solana transaction failed.');
+    } finally {
+      setProcessing(false);
+    }
+  };
+
+  const formatPrice = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
   return (
     <div className="page-container" style={{maxWidth: '1000px', margin: '0 auto'}}>
@@ -602,22 +707,24 @@ const BuyCoinsPage = () => {
         <h2 style={{width:'100%', textAlign:'center'}}>Fund Your Wallet</h2>
         <p style={{ width:'100%', textAlign:'center', color: 'var(--text-muted)' }}>Purchase GUESS Coins to participate in high-stakes visual puzzles.</p>
       </div>
+
+      {statusMsg && (
+        <div className="panel" style={{ marginBottom: '1.5rem', padding: '1rem 1.5rem', textAlign: 'center', color: statusMsg.startsWith('Error') || statusMsg.startsWith('Verification') ? '#ff6b6b' : 'var(--success)' }}>
+          {statusMsg}
+        </div>
+      )}
+
       <div className="pricing-grid">
-        {[
-          { id: 1, amount: 100, price: "$1.00", bonus: "0%" },
-          { id: 2, amount: 500, price: "$4.00", bonus: "+20%" },
-          { id: 3, amount: 1250, price: "$9.00", bonus: "+38%", popular: true },
-          { id: 4, amount: 3000, price: "$20.00", bonus: "+50%" }
-        ].map(b => (
+        {bundles.map(b => (
           <div 
             key={b.id} 
-            className={`pricing-card panel ${selectedBundle === b.id ? 'active' : ''} ${b.popular ? 'popular' : ''}`}
+            className={`pricing-card panel ${selectedBundle === b.id ? 'active' : ''} ${b.id === 3 ? 'popular' : ''}`}
             onClick={() => setSelectedBundle(b.id)}
           >
-            {b.popular && <div className="popular-badge">Most Popular</div>}
-            <div className="coin-amount">💰 {b.amount}</div>
-            <div className="bonus-pill">{b.bonus} Bonus</div>
-            <div className="fiat-price">{b.price}</div>
+            {b.id === 3 && <div className="popular-badge">Most Popular</div>}
+            <div className="coin-amount">💰 {b.totalCoins.toLocaleString()}</div>
+            <div className="bonus-pill">{b.bonusPct > 0 ? `+${b.bonusPct}%` : '0%'} Bonus</div>
+            <div className="fiat-price">{formatPrice(b.priceCents)}</div>
           </div>
         ))}
       </div>
@@ -625,8 +732,12 @@ const BuyCoinsPage = () => {
         <div className="payment-actions panel" style={{ marginTop: '2rem', textAlign: 'center' }}>
           <h3 style={{marginBottom:'1rem'}}>Select Payment Method</h3>
           <div className="payment-buttons">
-            <button className="stripe-btn" onClick={() => handlePayment('Stripe')}>Pay with Stripe</button>
-            <button className="solana-btn" onClick={() => handlePayment('Solana')}>Pay with Solana</button>
+            <button className="stripe-btn" onClick={handleStripe} disabled={processing}>
+              {processing ? 'Processing...' : 'Pay with Stripe'}
+            </button>
+            <button className="solana-btn" onClick={handleSolana} disabled={processing}>
+              {processing ? 'Processing...' : 'Pay with Solana'}
+            </button>
           </div>
         </div>
       )}
@@ -896,7 +1007,7 @@ function App() {
       {currentView === 'gallery' && <GalleryPage puzzles={puzzles} onPlayPuzzle={handlePlayPuzzle} onLoadMore={loadMorePuzzles} hasMore={hasMorePuzzles} total={totalPuzzles} />}
       {currentView === 'leaderboard' && <LeaderboardPage />}
       {currentView === 'how-it-works' && <HowItWorksPage />}
-      {currentView === 'buy-coins' && <BuyCoinsPage />}
+      {currentView === 'buy-coins' && <BuyCoinsPage user={user} onLoginClick={() => setShowAuthModal(true)} />}
       
       <FooterBar onNavigate={navigateTo} />
     </div>
