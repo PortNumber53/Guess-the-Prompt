@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS puzzle_guesses;
+DROP TABLE IF EXISTS puzzles;

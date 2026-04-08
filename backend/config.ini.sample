@@ -1,0 +1,12 @@
+# Guess the Prompt - Sample Configuration File
+# Copy this file to /etc/api-guess-the-prompt/config.ini, 
+# ~/.config/guess-the-prompt/config.ini, or keep it in the application's root directory as 'config.ini'
+
+# Main application settings
+PORT=8080
+
+# Database Configuration (PostgreSQL)
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/guessdb?sslmode=disable
+
+# Stripe Payment Integrations
+STRIPE_KEY=sk_test_1234567890abcdefghijklmnopqrstuvwxyz
