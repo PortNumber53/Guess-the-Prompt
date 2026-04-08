@@ -18,20 +18,20 @@ import (
 )
 
 type Bundle struct {
-	ID        int    `json:"id"`
-	Coins     int    `json:"coins"`
-	BonusPct  int    `json:"bonusPct"`
-	PriceCents int   `json:"priceCents"`
-	Label     string `json:"label"`
+	ID         int    `json:"id"`
+	Coins      int    `json:"coins"`
+	BonusPct   int    `json:"bonusPct"`
+	PriceCents int    `json:"priceCents"`
+	Label      string `json:"label"`
 }
 
 // Bundles defines the purchasable coin packages.
 // BonusPct is kept for future promotions but set to 0 for launch.
 var Bundles = []Bundle{
 	{ID: 1, Coins: 100, BonusPct: 0, PriceCents: 100, Label: "100 Coins"},
-	{ID: 2, Coins: 500, BonusPct: 0, PriceCents: 400, Label: "500 Coins"},
-	{ID: 3, Coins: 1250, BonusPct: 0, PriceCents: 900, Label: "1,250 Coins"},
-	{ID: 4, Coins: 3000, BonusPct: 0, PriceCents: 2000, Label: "3,000 Coins"},
+	{ID: 2, Coins: 500, BonusPct: 0, PriceCents: 500, Label: "500 Coins"},
+	{ID: 3, Coins: 1250, BonusPct: 0, PriceCents: 1250, Label: "1,250 Coins"},
+	{ID: 4, Coins: 3000, BonusPct: 0, PriceCents: 3000, Label: "3,000 Coins"},
 }
 
 func bundleByID(id int) *Bundle {
