@@ -1,0 +1,17 @@
+# Backend config with secrets
+backend/config.ini
+
+# Runtime directories
+backend/objects/
+backend/tmp/
+
+# Build artifacts
+*.exe
+*.out
+
+# IDE
+.vscode/
+.idea/
+
+# Dependencies
+node_modules/
