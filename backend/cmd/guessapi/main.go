@@ -26,6 +26,7 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(scaffoldCmd)
 	rootCmd.AddCommand(scaffoldImagesCmd)
+	rootCmd.AddCommand(workerCmd)
 	rootCmd.AddCommand(cleanupDuplicatesCmd)
 	rootCmd.AddCommand(cleanupOrphanImagesCmd)
 }

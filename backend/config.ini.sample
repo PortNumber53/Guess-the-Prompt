@@ -8,5 +8,8 @@ PORT=8080
 # Database Configuration (PostgreSQL)
 DATABASE_URL=postgres://postgres:postgres@localhost:5432/guessdb?sslmode=disable
 
+# RabbitMQ (used by scaffold + worker commands)
+RABBITMQ_URL=amqp://guest:guest@localhost:5672/
+
 # Stripe Payment Integrations
 STRIPE_KEY=sk_test_1234567890abcdefghijklmnopqrstuvwxyz
