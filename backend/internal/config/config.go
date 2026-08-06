@@ -10,6 +10,7 @@ import (
 
 type Config struct {
 	DatabaseURL          string `mapstructure:"DATABASE_URL"`
+	RabbitMQURL          string `mapstructure:"RABBITMQ_URL"`
 	StripeKey            string `mapstructure:"STRIPE_KEY"`
 	StripeWebhookSecret  string `mapstructure:"STRIPE_WEBHOOK_SECRET"`
 	SolanaReceiverWallet string `mapstructure:"SOLANA_RECEIVER_WALLET"`
@@ -23,12 +24,12 @@ func LoadConfig() {
 	viper.SetConfigType("env")
 
 	// Add /etc/ path
-	viper.AddConfigPath("/etc/api-guess-the-prompt/")
+	viper.AddConfigPath("/etc/Guess-the-Prompt/")
 
 	// Add ~/.config/ path
 	home, err := os.UserHomeDir()
 	if err == nil {
-		viper.AddConfigPath(filepath.Join(home, ".config", "guess-the-prompt"))
+		viper.AddConfigPath(filepath.Join(home, ".config", "Guess-the-Prompt"))
 	}
 
 	// Also look in current directory for development convenience

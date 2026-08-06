@@ -18,6 +18,7 @@ import (
 
 	"guessapi/internal/config"
 	"guessapi/internal/db"
+	"guessapi/internal/queue"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/spf13/cobra"
@@ -25,7 +26,7 @@ import (
 
 var scaffoldCmd = &cobra.Command{
 	Use:   "scaffold",
-	Short: "Seeds the database with sample puzzles for testing",
+	Short: "Publishes prompt-generation tasks to RabbitMQ (use --direct to run locally)",
 	Run: func(cmd *cobra.Command, args []string) {
 		count, _ := cmd.Flags().GetInt("count")
 		clearExisting, _ := cmd.Flags().GetBool("clear")
@@ -34,21 +35,64 @@ var scaffoldCmd = &cobra.Command{
 		usePresets, _ := cmd.Flags().GetBool("presets")
 		ollamaModel, _ := cmd.Flags().GetString("ollama-model")
 		ollamaURL, _ := cmd.Flags().GetString("ollama-url")
+		direct, _ := cmd.Flags().GetBool("direct")
 
 		dbUrl := config.AppConfig.DatabaseURL
 		if dbUrl == "" {
 			dbUrl = "postgres://postgres:postgres@localhost:5432/guessdb?sslmode=disable"
 		}
 
-		database, err := db.Connect(context.Background(), dbUrl)
-		if err != nil {
-			log.Fatalf("Failed to connect to database: %v", err)
-		}
-		defer database.Pool.Close()
+		// --direct: bypass queue and run locally (original behaviour)
+		if direct {
+			database, err := db.Connect(context.Background(), dbUrl)
+			if err != nil {
+				log.Fatalf("Failed to connect to database: %v", err)
+			}
+			defer database.Pool.Close()
 
-		if err := ScaffoldPuzzles(context.Background(), database.Pool, count, clearExisting, generateImages, objectsDir, usePresets, ollamaModel, ollamaURL); err != nil {
-			log.Fatalf("Scaffold failed: %v", err)
+			if err := ScaffoldPuzzles(context.Background(), database.Pool, count, clearExisting, generateImages, objectsDir, usePresets, ollamaModel, ollamaURL); err != nil {
+				log.Fatalf("Scaffold failed: %v", err)
+			}
+			return
 		}
+
+		// Queue mode: clear existing locally if requested, then publish task
+		if clearExisting {
+			database, err := db.Connect(context.Background(), dbUrl)
+			if err != nil {
+				log.Fatalf("Failed to connect to database: %v", err)
+			}
+			log.Println("Clearing existing puzzles...")
+			database.Pool.Exec(context.Background(), "DELETE FROM puzzle_guesses")
+			database.Pool.Exec(context.Background(), "DELETE FROM puzzles")
+			log.Println("Existing puzzles cleared")
+			database.Pool.Close()
+		}
+
+		rabbitURL := config.AppConfig.RabbitMQURL
+		if rabbitURL == "" {
+			log.Fatal("RABBITMQ_URL is not configured (set it in config.ini or use --direct to skip the queue)")
+		}
+
+		mqClient, err := queue.Connect(rabbitURL)
+		if err != nil {
+			log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+		}
+		defer mqClient.Close()
+
+		task := queue.PromptTask{
+			Count:       count,
+			UsePresets:  usePresets,
+			OllamaModel: ollamaModel,
+			OllamaURL:   ollamaURL,
+			ObjectsDir:  objectsDir,
+		}
+
+		if err := mqClient.Publish(context.Background(), queue.QueuePrompt, task); err != nil {
+			log.Fatalf("Failed to publish prompt task: %v", err)
+		}
+
+		log.Printf("Published prompt task to queue: count=%d presets=%v model=%s", count, usePresets, ollamaModel)
 	},
 }
 
@@ -80,26 +124,87 @@ var cleanupOrphanImagesCmd = &cobra.Command{
 
 var scaffoldImagesCmd = &cobra.Command{
 	Use:   "scaffold-images",
-	Short: "Generate AI images for puzzles that have placeholder URLs",
+	Short: "Generate AI images for puzzles that have placeholder URLs (or enqueue via RabbitMQ)",
 	Run: func(cmd *cobra.Command, args []string) {
 		objectsDir, _ := cmd.Flags().GetString("objects-dir")
 		objectsBaseURL, _ := cmd.Flags().GetString("objects-base-url")
 		batchSize, _ := cmd.Flags().GetInt("batch-size")
+		direct, _ := cmd.Flags().GetBool("direct")
 
 		dbUrl := config.AppConfig.DatabaseURL
 		if dbUrl == "" {
 			dbUrl = "postgres://postgres:postgres@localhost:5432/guessdb?sslmode=disable"
 		}
 
+		// --direct: generate images locally (original behaviour)
+		if direct {
+			database, err := db.Connect(context.Background(), dbUrl)
+			if err != nil {
+				log.Fatalf("Failed to connect to database: %v", err)
+			}
+			defer database.Pool.Close()
+
+			if err := ScaffoldImages(context.Background(), database.Pool, objectsDir, objectsBaseURL, batchSize); err != nil {
+				log.Fatalf("Scaffold images failed: %v", err)
+			}
+			return
+		}
+
+		// Queue mode: find puzzles needing images and enqueue one task per puzzle
 		database, err := db.Connect(context.Background(), dbUrl)
 		if err != nil {
 			log.Fatalf("Failed to connect to database: %v", err)
 		}
 		defer database.Pool.Close()
 
-		if err := ScaffoldImages(context.Background(), database.Pool, objectsDir, objectsBaseURL, batchSize); err != nil {
-			log.Fatalf("Scaffold images failed: %v", err)
+		rows, err := database.Pool.Query(context.Background(), `
+			SELECT id, prompt FROM puzzles
+			WHERE image_url LIKE 'https://images.unsplash.com/%%'
+			OR image_url = '/ai-generated-image.png'
+			ORDER BY id
+			LIMIT $1
+		`, batchSize)
+		if err != nil {
+			log.Fatalf("Failed to query puzzles: %v", err)
 		}
+		defer rows.Close()
+
+		var tasks []queue.ImageTask
+		for rows.Next() {
+			var id int
+			var prompt string
+			if err := rows.Scan(&id, &prompt); err != nil {
+				log.Fatalf("Failed to scan puzzle: %v", err)
+			}
+			tasks = append(tasks, queue.ImageTask{
+				PuzzleID:       id,
+				Prompt:         prompt,
+				ObjectsDir:     objectsDir,
+				ObjectsBaseURL: objectsBaseURL,
+			})
+		}
+
+		if len(tasks) == 0 {
+			log.Println("No puzzles need image generation")
+			return
+		}
+
+		rabbitURL := config.AppConfig.RabbitMQURL
+		if rabbitURL == "" {
+			log.Fatal("RABBITMQ_URL is not configured (set it in config.ini or use --direct to skip the queue)")
+		}
+
+		mqClient, err := queue.Connect(rabbitURL)
+		if err != nil {
+			log.Fatalf("Failed to connect to RabbitMQ: %v", err)
+		}
+		defer mqClient.Close()
+
+		if err := mqClient.PublishImageTasks(context.Background(), tasks); err != nil {
+			log.Fatalf("Failed to publish image tasks: %v", err)
+		}
+
+		log.Printf("Published %d image tasks to queue", len(tasks))
 	},
 }
 
@@ -134,10 +239,12 @@ func init() {
 	scaffoldCmd.Flags().Bool("presets", false, "Use preset templates instead of Ollama for prompts")
 	scaffoldCmd.Flags().String("ollama-model", "gemma4", "Ollama model to use for prompt generation")
 	scaffoldCmd.Flags().String("ollama-url", "http://localhost:11434", "Ollama base URL")
+	scaffoldCmd.Flags().Bool("direct", false, "Run locally instead of publishing to RabbitMQ")
 
 	scaffoldImagesCmd.Flags().String("objects-dir", "./objects", "Directory to save generated images")
 	scaffoldImagesCmd.Flags().String("objects-base-url", "/objects/", "Base URL for generated images")
 	scaffoldImagesCmd.Flags().IntP("batch-size", "b", 5, "Number of images to generate")
+	scaffoldImagesCmd.Flags().Bool("direct", false, "Run locally instead of publishing to RabbitMQ")
 
 	cleanupDuplicatesCmd.Flags().Bool("dry-run", false, "Show which puzzles would be deleted without mutating data")
 	cleanupOrphanImagesCmd.Flags().String("objects-dir", "./objects", "Directory containing generated images")
